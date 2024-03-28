@@ -2,72 +2,166 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"io"
+	"main/lib"
 	"os"
-	"os/exec"
-
-	"github.com/mattn/go-tty"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
-func main() {
-	ttya, err := tty.Open()
+func ask(query string) (string, error) {
+	var input string
+
+	fmt.Println(query)
+	_, err := fmt.Scan(&input)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-	defer ttya.Close()
 
-	a := make([]string, 0)
-	a = append(a, "kunal")
-	a = append(a, "kumar")
-	a = append(a, "anu")
-	a = append(a, "bhav")
-	a = append(a, "anand")
-
-	dropdown(a, ttya)
-
+	return input, nil
 }
 
-func dropdownHelper(arr []string, selected int, title string) {
-	fmt.Println(title)
-	for index, element := range arr {
-		if index == selected {
-			fmt.Println(">>> " + element)
+func isExistsAndIsFolder(path string) bool {
+	if r, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Println("Error: Folder does not exist.")
+	} else {
+		if r.IsDir() {
+			return true
 		} else {
-			fmt.Println("    " + element)
+			fmt.Println("Error: Not a folder")
 		}
 	}
-	fmt.Println("Press 's' to to go up, 'd' to go down and 'e' to select")
+	return false
 }
 
-func dropdown(list []string, ttya *tty.TTY) int {
+func main() {
+	targetFolder, err := ask("Target folder (folder containing new files)")
 
-	selected := 0
-	for {
-		cmd := exec.Command("clear")
-		cmd.Stdout = os.Stdout
-		cmd.Run()
-		dropdownHelper(list, selected, "ABC")
-		r, err := ttya.ReadRune()
-		if err != nil {
-			log.Fatal(err)
+	if err != nil {
+		fmt.Println("Error: Unable to get target folder!")
+		return
+	}
+
+	destFolder, err := ask("Destination folder (folder where files will be copied)")
+
+	if err != nil {
+		fmt.Println("Error: Unable to get target folder!")
+		return
+	}
+
+	println("Target folder:- " + targetFolder)
+	println("Destination folder:- " + destFolder)
+
+	isTargetFolderExists := isExistsAndIsFolder(targetFolder)
+	isDestFolderExists := isExistsAndIsFolder(destFolder)
+
+	if !isDestFolderExists || !isTargetFolderExists {
+		fmt.Println("Error: Folder does not exist. Exiting...")
+		os.Exit(1)
+		return
+	}
+
+	targetFolderItems, err := lib.ListFiles(targetFolder)
+	if err != nil {
+		fmt.Println("Error: unable to list target folders")
+		os.Exit(1)
+		return
+	}
+	destFolderItems, err := lib.ListFiles(destFolder)
+	if err != nil {
+		fmt.Println("Error: unable to list destination folders")
+		os.Exit(1)
+		return
+	}
+
+	var MissingFilesInDest []string
+
+	for _, tItem := range targetFolderItems {
+		exit := false
+		for _, dItem := range destFolderItems {
+			tFS := strings.Replace(tItem, targetFolder, "", 1)
+			dFS := strings.Replace(dItem, destFolder, "", 1)
+			// println(tFS + "  ---  " + dFS)
+			if tFS == dFS {
+				exit = true
+			}
 		}
-		key := string(r)
-		if key == "e" {
-			break
-		} else if key == "s" {
-			if selected <= 0 {
-				selected = len(list) - 1
-			} else {
-				selected -= 1
-			}
-		} else if key == "d" {
-			if selected >= (len(list) - 1) {
-				selected = 0
-			} else {
-				selected += 1
-			}
+		if !exit {
+			MissingFilesInDest = append(MissingFilesInDest, tItem)
 		}
 	}
 
-	return selected
+	fmt.Println("")
+	fmt.Println(strconv.Itoa(len(MissingFilesInDest)) + " Items are missing from destination folder")
+	fmt.Println("")
+
+	toContinue, err := ask("Do you want to continue? (y/N)")
+	if err != nil {
+		fmt.Println("Error: getting answer", err)
+		os.Exit(1)
+		return
+	}
+	if strings.TrimSpace(strings.ToLower(toContinue)) != "y" {
+		fmt.Println("Your answer was 'No'. Exiting...")
+		os.Exit(1)
+		return
+	}
+
+	var errFilePath []string
+
+	for _, items := range MissingFilesInDest {
+		dPath := filepath.Join(destFolder, strings.Replace(items, targetFolder, "", 1))
+		dPathDirPath := filepath.Dir(dPath)
+
+		if _, err := os.Stat(dPathDirPath); os.IsNotExist(err) {
+			// Directory does not exist, create it
+			err := os.MkdirAll(dPathDirPath, 0755)
+			if err != nil {
+				fmt.Println("Error creating directory:", err)
+				errFilePath = append(errFilePath, items)
+				continue
+			}
+		} else if err != nil {
+			fmt.Println("Error checking directory existence:", err)
+			errFilePath = append(errFilePath, items)
+			continue
+		}
+
+		err = copyFile(items, dPath)
+		if err != nil {
+			errFilePath = append(errFilePath, items)
+			continue
+		}
+	}
+
+	fmt.Println("")
+	fmt.Println(strconv.Itoa(len(errFilePath)) + " Items were not copied due to error")
+	fmt.Println("")
+}
+
+func copyFile(sourcePath string, destPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		fmt.Println("Error opening source file:", err)
+		return err
+	}
+	defer source.Close()
+
+	// Create the destination file
+	destination, err := os.Create(destPath)
+	if err != nil {
+		fmt.Println("Error creating destination file:", err)
+		return err
+	}
+	defer destination.Close()
+
+	// Copy the contents of the source file to the destination file
+	_, err = io.Copy(destination, source)
+	if err != nil {
+		fmt.Println("Error copying file:", err)
+		return err
+	}
+
+	return nil
 }
